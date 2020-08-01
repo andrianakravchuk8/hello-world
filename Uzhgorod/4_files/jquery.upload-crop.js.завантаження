@@ -1,0 +1,854 @@
+(function ($, fileapi, fb) {
+    var _slice = [].slice;
+
+    /** @class */
+    function Size(/** number|Size */ width, /** number= */ height) {
+        if ("object" === typeof width) {
+            height = width.height;
+            width = width.width;
+        }
+        this.width = parseFloat(width);
+        this.height = parseFloat(height);
+    }
+    Size.prototype.getAspectRatio = function () {
+        if (Math.abs(this.height) < 1e-6) {
+            throw "Can't calculate aspect ratio - height equals 0.0!";
+        }
+        return this.width / this.height;
+    };
+    Size.prototype.isFitInto = function (/** Size */ rectangle) {
+        return this.width < (rectangle.width + 1e-6) && this.height < (rectangle.height + 1e-6);
+    };
+    Size.prototype.placeInto = function (/** Size */ rectangle) {
+        var aspectRatio = this.getAspectRatio(),
+            regionWidth = Math.min(rectangle.height * aspectRatio, rectangle.width),
+            regionHeight = Math.min(rectangle.width / aspectRatio, rectangle.height);
+        return {
+            x: (rectangle.width - regionWidth) / 2,
+            y: (rectangle.height - regionHeight) / 2,
+            w: regionWidth,
+            h: regionHeight
+        };
+    };
+
+    function getCropRegionForFile(file, /** string */ section, /** Size */ imageSize, /** Size */ cropSize) {
+        if (file.hasOwnProperty('cropData') && file.cropData.hasOwnProperty(section)) {
+            var data = file.cropData[section];
+            return {
+                x: data.l * imageSize.width,
+                y: data.t * imageSize.height,
+                w: data.w * imageSize.width,
+                h: data.h * imageSize.height
+            };
+        }
+
+        return cropSize.placeInto(imageSize);
+    }
+
+    var Plugin = function (el, options) {
+        var self = this;
+        this.submitFlag = false;
+        this.imageLinks = [];
+        this.$el = $(el);
+        this.files = [];
+        this.maxOrder = false;
+        /** @type {UploadImageSettings} */
+        this.options = {
+            attachFormValidator: true,
+            multiple: false,
+            sort: true,
+            useGlyphIcon: true,
+            attributeName: null,
+            model: null,
+            el: null,
+            buttons: {
+                cropApply: "",
+                showPreview: "",
+                hidePreview: ""
+            },
+            uploadingActiveMessage: "В настоящее время выполняется загрузка файла(ов), дождитесь завершения процесса",
+            uploadQueueNotEmptyMessage: "Очередь загрузки изображений не пуста, выполните загрузку или удалите лишние изображения",
+            uploadingFailMessage: "При загрузке файла \"{fileName}\" произошла ошибка, сервер вернул: {serverResponse}",
+            cropFailMessage: "При сохранении параметров кадрирования для секции \"{sectionName}\" произошла ошибка, сервер вернул: {serverResponse}",
+            selectingFailMessage: "Файл(ы) {filesList} не удовлетворяет(ют) критериям отбора"
+        };
+        this.cropCoords = {};
+        this.jcropApi = null;
+        this.jcropSettings = {};
+        this.jcropParams = {};
+        this.currentFile = null;
+        this.subdir = null;
+        /** @type {CisAlerts} */
+        this.alertsApi = $.CisAlerts || null;
+
+        $.extend(true, this.options, options);
+        this.init();
+
+        this.faultFiles = [];
+        /** @type {Object.<string, jqXHR>} */
+        this.cropXhr = {};
+        /** @type {jqXHR|null} */
+        this.getCropDataXhr = null;
+
+        var filePreviewOptions = this.api.option("elements.file.preview") || {},
+            /** @type {PreviewTabOptions} */
+            previewTabOptions = this.api.option("elements.previewTab") || {};
+        this
+            ._bind("elements.ctrl.browse", function () {
+                self.$el.find(":file").click();
+
+                return false;
+            })
+            ._bind("elements.previewTab.toggleButton", function () {
+                var headerSelector = previewTabOptions.header,
+                    contentSelector = previewTabOptions.content;
+                if ("string" !== typeof headerSelector || "string" !== typeof contentSelector) {
+                    return false;
+                }
+                var $this = $(this),
+                    $header = $this.closest(headerSelector),
+                    $content = $header.next(contentSelector);
+                $content.toggle(0, function () {
+                    var isVisible = $content.is(":visible"),
+                        buttons = self.options.buttons;
+                    $header
+                        .toggleClass("is-expanded", isVisible)
+                        .find(previewTabOptions.toggleButton)
+                            .replaceWith(isVisible ? buttons.hidePreview : buttons.showPreview);
+                });
+
+                return false;
+            })
+            // обработчик события удаления картинки
+            ._bind("elements.ctrl.file.remove", function () {
+                var fileId = $(this).closest("[data-fileapi-id]").data("fileapiId");
+                self.deleteFile(self.getFileById(fileId));
+
+                return false;
+            })
+            // обработчик события просмотра картинки
+            ._bind("elements.ctrl.file.preview", function () {
+                var fileId = $(this).closest("[data-fileapi-id]").data("fileapiId"),
+                    imageLink = self.findImageLink(fileId);
+                if (null === imageLink) {
+                    return false;
+                }
+                fb.open({
+                    src: imageLink.href,
+                    slideShow: false,
+                    fullScreen: false,
+                    thumbs: false,
+                    infobar: false,
+                    arrows: false
+                });
+
+                return false;
+            })
+            //обработчик нажатия кнопки кропа
+            ._bind("elements.ctrl.file.crop", function () {
+                var $this = $(this),
+                    $container = $this.closest("[data-fileapi-id]"),
+                    fileId = $container.data("fileapiId"),
+                    subSectionName = $this.closest("[data-section-name]").data("sectionName"),
+                    imageLink = self.findImageLink(fileId);
+                if ($this.hasClass("disabled") || null === imageLink || 0 === self.options.subdirs.length) {
+                    return false;
+                }
+                self.api.$elem("ctrl.file.crop", $container).addClass("disabled");
+                var file = self.getFileById(fileId);
+                self._getCropData(file)
+                    .done(function () {
+                        self.currentFile = file;
+                        fb.open({
+                            src: self.currentFile.originalSrc || imageLink.href,
+                            slideShow: false,
+                            fullScreen: false,
+                            thumbs: false,
+                            infobar: false,
+                            arrows: false,
+                            afterShow: self._getFancyBoxAfterShowHandler(subSectionName)
+                        });
+                    })
+                    .always(function () {
+                        self.api.$elem("ctrl.file.crop", $container).removeClass("disabled");
+                    });
+
+                return false;
+            });
+        if ("number" === typeof filePreviewOptions.aspectRatio && "function" !== typeof filePreviewOptions.processing) {
+            var api = this.api;
+            api.option("elements.file.preview.processing", function (file, image, doneFn) {
+                var contentSelector = previewTabOptions.content;
+                if ("string" === typeof contentSelector) {
+                    var $preview = api.$file(fileapi.uid(file)).find(api.option("elements.file.preview.el"));
+                    image.resize($preview.width() / filePreviewOptions.aspectRatio, "height");
+                } else {
+                    image.preview(100, 100);
+                }
+                doneFn();
+                $.each(file.subSections || [], function () {
+                    self._makeSectionPreview(file, this);
+                });
+            });
+        }
+
+        this.$el
+            .on("select drop", function (event, data) {
+                self.getFiles(data);
+                if (null !== self.$form) {
+                    var messages = {};
+                    messages[self.$el.prop("id")] = [];
+                    self.$form.yiiActiveForm("updateMessages", messages, true);
+                }
+                self._reactivateAutoUpload();
+                if (null !== self.alertsApi && data.other.length) {
+                    var otherFileNames = data.other.map(function (/** File */ file) {
+                        return file.name;
+                    });
+                    self.alertsApi.addAlert(self.options.selectingFailMessage, {
+                        filesList: "\"" + otherFileNames.join("\", \"") + "\""
+                    }, 15000);
+                }
+            })
+            .on("fileupload", function (event, uiEvt) {
+                var file = uiEvt.file;
+                file.$el
+                    .removeClass("has-error")
+                    .find(self.api.option("elements.file.progress")).parent()
+                        .show();
+                delete file.error;
+            })
+            .on("filecomplete", function (event, uiEvt) {
+                var file = uiEvt.file;
+                file.$el.find(self.api.option("elements.file.progress")).parent().hide();
+                if (uiEvt.error) {
+                    var serverResponse = uiEvt.error;
+                    if (null !== self.alertsApi) {
+                        self.alertsApi.addAlert(self.options.uploadingFailMessage, {
+                            fileName: uiEvt.file.name,
+                            serverResponse: undefined !== uiEvt.result ?
+                                self.alertsApi.formatServerResponse(uiEvt.result) :
+                                serverResponse
+                        }, false);
+                    }
+                    if (!self.api.option("multiple") && self.api.option("autoUpload")) {
+                        self.reactivateAutoUpload = true;
+                        self.api.option("autoUpload", false);
+                    }
+                    file.$el
+                        .removeClass("complete")
+                        .addClass("has-error");
+                    file.complete = false;
+                    file.error = true;
+                    self.faultFiles.push(file);
+                    console.log(uiEvt.error + ": " + serverResponse);
+
+                    return false;
+                }
+                self.setFileInfo(file, uiEvt.result);
+                file.$el.addClass("complete");
+                var fileId = fileapi.uid(file),
+                    imageLink = self.findImageLink(fileId);
+                if (undefined !== file.bigSrc) {
+                    if (/^blob:/.test(imageLink.href)) {
+                        URL.revokeObjectURL(imageLink.href);
+                    }
+                    file.src = imageLink.href = file.bigSrc + "?t=" + Date.now();
+                    self.api._makeFilePreview(fileId, file, self.api.option('elements.file.preview'));
+                }
+                if (!self.options.multiple) {
+                    var hiddenName = self.options.attributeName + "[name]";
+                    self.$el.find("input[name='" + hiddenName + "']").val(uiEvt.result.name);
+                }
+                if (self.options.multiple) {
+                    self.setMaxOrder(uiEvt.result.order);
+                }
+                self.generateHiddenInput(file);
+            })
+            .on("fileprepare", function (event, uiEvt) {
+                var sectionNames = $.map(self.options.subdirs, function (data) {
+                    return data.value;
+                });
+                $.extend(uiEvt.options.data, {
+                    order: self.api.files.indexOf(uiEvt.file) + 1,
+                    subSections: sectionNames
+                });
+            })
+            .on("beforeupload", function () {
+                self.$el
+                    .data("complete", false)
+                    .attr("data-complete", false);
+                if (null !== self.$form) {
+                    var messages = {};
+                    messages[self.$el.prop("id")] = [];
+                    self.$form.yiiActiveForm("updateMessages", messages, true);
+                }
+                self._reactivateAutoUpload();
+            })
+            .on("complete", function () {
+                if (self.faultFiles.length > 0) {
+                    self.api.queue = self.faultFiles;
+                    self.faultFiles = [];
+                }
+                if (0 === self.api.queue.length) {
+                    self.$el
+                        .data("complete", true)
+                        .attr("data-complete", true);
+                }
+                if (null !== self.$form) {
+                    self.$form.yiiActiveForm("validateAttribute", self.$el.prop("id"));
+                }
+                self.api._redraw();
+            })
+            .on("fileremove", function (event) {
+                if (!self.options.multiple) {
+                    var hiddenName = self.options.attributeName + "[name]";
+                    self.$el
+                        .find(".description-wrapper input")
+                            .remove()
+                        .end()
+                        .find("input[name='" + hiddenName + "']")
+                            .val("");
+                }
+                self._reactivateAutoUpload();
+            });
+
+        if (this.options.sort) {
+            var callback = function (event, ui) {
+                var isJQueryUi = undefined !== ui,
+                    element = isJQueryUi ? ui.item : event.detail.item,
+                    fileId = $(element).data("fileapiId"),
+                    file = self.getFileById(fileId);
+                if (null === file) {
+                    return;
+                }
+                self.sortImages();
+                if (!file.hasOwnProperty("id") && !isJQueryUi) {
+                    $(event.target).sortable("cancel");
+                }
+            };
+
+            this.api.$elem("list").sortable({
+                forcePlaceholderSize: true,
+                revert: true,
+                update: callback
+            });
+        }
+
+        this.$form = null;
+        if (this.options.attachFormValidator) {
+            var $form = this.$el.closest("form");
+            if (0 === $form.length) {
+                return;
+            }
+            this.$form = $form.on("afterInit", function () {
+                var fieldId = self.$el.prop("id"),
+                    attribute = {
+                        id: fieldId,
+                        container: ".field-" + fieldId,
+                        input: "#" + fieldId + " :file",
+                        validateOnChange: false,
+                        validateOnBlur: false,
+                        validate: function (attribute, value, messages) {
+                            if (self.api.queue.length > 0) {
+                                var message = self.api.active ?
+                                    self.options.uploadingActiveMessage :
+                                    self.options.uploadQueueNotEmptyMessage;
+                                messages.push(message);
+                            }
+                        }
+                    };
+                $form.yiiActiveForm("add", attribute);
+            });
+        }
+    };
+
+    Plugin.prototype = {
+        constructor: Plugin,
+        _bind: function (selectorOptionName, handler, eventName) {
+            var selector = this.api.option(selectorOptionName);
+            if ("string" === typeof selector) {
+                eventName = eventName || "click";
+                this.$el.on(eventName, selector, handler);
+            }
+
+            return this;
+        },
+        _reactivateAutoUpload: function () {
+            if (this.reactivateAutoUpload) {
+                this.api.option("autoUpload", true);
+                this.reactivateAutoUpload = false;
+            }
+        },
+        _makeSectionPreview: function (file, sectionData) {
+            if (!sectionData || !sectionData.hasOwnProperty("url")) {
+                return false;
+            }
+            var $section = this.api.$file(fileapi.uid(file)).find("[data-section-name='" + sectionData.name + "']"),
+                $sectionContent = $section.find(this.api.option("elements.previewTab.content")),
+                aspectRatio = sectionData.aspectRatio ||
+                    ($section.data("sectionWidth") / $section.data("sectionHeight"));
+            fileapi.Image(sectionData.url + "?t=" + Date.now())
+                .resize($sectionContent.width() / aspectRatio, "height")
+                .get(function (error, imageElement) {
+                    $sectionContent.html(!error ? imageElement : $("<span>", {text: "Preview error"}));
+                });
+        },
+        _getFancyBoxAfterShowHandler: function (/** undefined|string */ subSectionName) {
+            var self = this;
+
+            return function () {
+                var $slide = this.$slide,
+                    $image = this.$image,
+                    imageSize = new Size($image.width(), $image.height()),
+                    firstSectionData = self.options.subdirs[0];
+                if (Math.abs(imageSize.width) < 1e-6 || Math.abs(imageSize.height) < 1e-6) {
+                    $.fancybox.close();
+                    throw "Image without width or height!";
+                }
+                self.jcropSettings.file = self.currentFile;
+                self.jcropSettings.boxWidth = imageSize.width;
+                self.jcropSettings.boxHeight = imageSize.height;
+                self.jcropSettings.maxSize = self.jcropSettings.trueSize = [imageSize.width, imageSize.height];
+                self.jcropSettings.minSize = [20, 20];
+                self.jcropSettings.setSelect = [
+                    imageSize.width / 2 - 50,
+                    imageSize.height / 2 - 50,
+                    imageSize.width / 2 + 50,
+                    imageSize.height / 2 + 50
+                ];
+                self.jcropSettings.onSelect = function (coordinates) {
+                    self.cropCoords = {
+                        l: coordinates.x / imageSize.width,
+                        t: coordinates.y / imageSize.height,
+                        w: coordinates.w / imageSize.width,
+                        h: coordinates.h / imageSize.height
+                    };
+                };
+                self.jcropSettings.aspectRatio = firstSectionData.size.width / firstSectionData.size.height;
+                $image.attr("style", "").Jcrop(self.jcropSettings, function () {
+                    self.jcropApi = this;
+                });
+                $(self.options.buttons.cropApply)
+                    .appendTo($slide)
+                    .on("click", function () {
+                        self._doCrop(self.currentFile, self.cropCoords, self.selectedSubSection);
+                        $.fancybox.close();
+
+                        return false;
+                    });
+
+                if (undefined !== subSectionName) {
+                    self.selectedSubSection = subSectionName;
+                    var fileSubSection = self.options.subdirs.find(function (item) {
+                        return subSectionName === item.value;
+                    });
+                    if (undefined !== fileSubSection) {
+                        var sectionSize = new Size(fileSubSection.size),
+                            cropData = getCropRegionForFile(
+                                self.currentFile,
+                                self.selectedSubSection,
+                                imageSize,
+                                sectionSize
+                            ),
+                            minSize = new Size(sectionSize);
+                        if (!sectionSize.isFitInto(imageSize)) {
+                            var fitSection = minSize.placeInto(imageSize);
+                            minSize = new Size(fitSection.w, fitSection.h);
+                        }
+                        self.jcropApi.setOptions({
+                            aspectRatio: sectionSize.getAspectRatio(),
+                            minSize: [minSize.width, minSize.height]
+                        });
+                        self.jcropApi.setSelect([
+                            cropData.x,
+                            cropData.y,
+                            cropData.x + cropData.w,
+                            cropData.y + cropData.h
+                        ]);
+                    }
+                } else {
+                    var $select = $("<select>", {
+                            "class": "form-control",
+                            "css": {position: "absolute", left: "2px", bottom: "50px", zIndex: 700, maxWidth: 180}
+                        })
+                        .appendTo($slide)
+                        .on("change", function () {
+                            if (self.currentFile) {
+                                var $option = $(this).find(':selected'),
+                                    sectionSize = new Size($option.data('width'), $option.data('height')),
+                                    cropData = getCropRegionForFile(
+                                        self.currentFile,
+                                        $option.val(),
+                                        imageSize,
+                                        sectionSize
+                                    ),
+                                    minSize = new Size(sectionSize);
+                                if (!sectionSize.isFitInto(imageSize)) {
+                                    var fitSection = minSize.placeInto(imageSize);
+                                    minSize = new Size(fitSection.w, fitSection.h);
+                                }
+                                self.selectedSubSection = $option.val();
+                                self.jcropApi.setOptions({
+                                    aspectRatio: sectionSize.getAspectRatio(),
+                                    minSize: [minSize.width, minSize.height]
+                                });
+                                self.jcropApi.setSelect([
+                                    cropData.x,
+                                    cropData.y,
+                                    cropData.x + cropData.w,
+                                    cropData.y + cropData.h
+                                ]);
+                            }
+                        });
+                    $select.empty();
+                    for (var i in self.options.subdirs) {
+                        $("<option>", {
+                            value: self.options.subdirs[i].value,
+                            text: self.options.subdirs[i].name,
+                            data: {
+                                width: self.options.subdirs[i].size.width,
+                                height: self.options.subdirs[i].size.height
+                            }
+                        }).appendTo($select);
+                    }
+                    $select.trigger('change');
+                }
+            };
+        },
+        _doCrop: function (/** File */ file, cropParams, /** string */ selectedSubSection) {
+            if (!file || !file.hasOwnProperty('id')) {
+                return;
+            }
+            var self = this,
+                fileId = fileapi.uid(file),
+                postData = {
+                    file: {
+                        id: file.id,
+                        name: file.fileName || file.name,
+                        section: file.section,
+                        path: file.path,
+                        model: this.api.options.data.model,
+                        attribute: this.api.options.data.attribute,
+                        subdir: selectedSubSection
+                    },
+                    crop: cropParams
+                },
+                $container = this.api.$file(fileId).find("[data-section-name='" + selectedSubSection + "']");
+            if (null !== this.options.siteId) {
+                postData.siteId = this.options.siteId;
+            }
+            $container
+                .addClass("loading")
+                .find(this.api.option("elements.ctrl.file.crop"))
+                    .attr("aria-disabled", "disabled")
+                    .prop("disabled", true);
+            if (this.cropXhr.hasOwnProperty(selectedSubSection)) {
+                this.cropXhr[selectedSubSection].abort();
+            }
+            this.cropXhr[selectedSubSection] = $.post(this.api.option("cropUrl"), postData)
+                .done(function (data) {
+                    var fileSubSection = file.subSections.find(function (item) {
+                            return selectedSubSection === item.name;
+                        });
+                    if (!file.hasOwnProperty('cropData')) {
+                        file.cropData = {};
+                    }
+                    file.cropData[selectedSubSection] = data.cropParams;
+                    self._makeSectionPreview(file, fileSubSection);
+                })
+                .fail(function (jqXHR, textStatus, errorThrown) {
+                    self._defaultAjaxFailHandler(jqXHR, textStatus, errorThrown, self.options.cropFailMessage, {
+                        sectionName: $container.data("sectionTitle"),
+                        fileName: file.name
+                    });
+                })
+                .always(function () {
+                    $container
+                        .removeClass("loading")
+                        .find(self.api.option("elements.ctrl.file.crop"))
+                            .removeAttr("aria-disabled")
+                            .prop("disabled", false);
+                    delete self.cropXhr[selectedSubSection];
+                });
+        },
+        _getCropData: function (/** File */ file) {
+            var self = this,
+                deferred = $.Deferred();
+            if (false !== file.cropData) {
+                deferred.resolve();
+                return deferred.promise();
+            }
+            var params = {
+                    section: file.section,
+                    path: file.path,
+                    name: file.fileName || file.name,
+                    storageId: file.storageId
+                };
+            if (null !== this.options.siteId) {
+                params.siteId = this.options.siteId;
+            }
+            if (null !== this.getCropDataXhr) {
+                this.getCropDataXhr.abort();
+            }
+            this.getCropDataXhr = $.getJSON(this.options.getCropDataUrl, params)
+                .done(function (data) {
+                    file.cropData = data;
+                    deferred.resolve();
+                })
+                .fail(function (jqXHR, textStatus, errorThrown) {
+                    deferred.reject();
+                    self._defaultAjaxFailHandler(jqXHR, textStatus, errorThrown, self.options.getCropDataFailMessage, {
+                        fileName: params.name
+                    });
+                })
+                .always(function () {
+                    self.getCropDataXhr = null;
+                });
+
+            return deferred.promise();
+        },
+        _defaultAjaxFailHandler: function (jqXHR, textStatus, errorThrown, alertMessage, alertMessageParams) {
+            if ("abort" === errorThrown) {
+                return;
+            }
+            var serverResponse = jqXHR.responseText || errorThrown;
+            if (null !== this.alertsApi) {
+                this.alertsApi.addAlert(alertMessage, $.extend({
+                    serverResponse: undefined !== jqXHR.responseJSON ?
+                        this.alertsApi.formatServerResponse(jqXHR.responseJSON) :
+                        serverResponse
+                }, alertMessageParams), false);
+            }
+            console.log(textStatus + ": " + serverResponse);
+        },
+        init: function () {
+            this.api = this.$el.fileapi("widget");
+            if (this.api.files.length > 0) {
+                this.getFiles(this.api);
+                this.generateHiddenInputs(this.files);
+            }
+        },
+        setCropSettings: function (settings, params) {
+            this.jcropSettings = settings;
+            this.jcropParams = params;
+        },
+        getFiles: function (data) {
+            var self = this;
+            if (undefined === data) {
+                return false;
+            }
+            $.each(data.files, function () {
+                var file = this,
+                    isImage = /^image/.test(file.type),
+                    fileId = fileapi.uid(file);
+                if (file.hasOwnProperty('id')) {
+                    if (file.delete) {
+                        return;
+                    }
+                    file.src = file.bigSrc + "?t=" + Date.now();
+                    if (isImage) {
+                        var image = $("<img>");
+                        image[0].onload = function () {
+                            self.imageLinks.push({href: file.src, uid: fileId});
+                            self.api.$file(fileId).addClass("complete");
+                            self.api._makeFilePreview(fileId, file, self.api.option('elements.file.preview'));
+                        };
+                        image[0].onerror = function () {
+                            file.error = true;
+                            self.api.$file(fileId).addClass("has-error");
+                        };
+                        image[0].src = file.src;
+                    } else {
+                        self.imageLinks.push({href: file.src, uid: fileId});
+                        self.api.$file(fileId).addClass("complete");
+                        self.api._makeFilePreview(fileId, file, self.api.option('elements.file.preview'));
+                    }
+                } else {
+                    if (isImage) {
+                        fileapi.Image(this).get(function (error, image) {
+                            if (!error) {
+                                self.imageLinks.push({href: image.toDataURL(), uid: fileId});
+                            }
+                        });
+                    } else {
+                        self.imageLinks.push({href: URL.createObjectURL(file), uid: fileId});
+                    }
+                }
+            });
+        },
+        getFileById: function (uid) {
+            var file = null;
+            $.each(this.api.files, function () {
+                if (uid === fileapi.uid(this)) {
+                    file = this;
+                }
+            });
+
+            return file;
+        },
+        setFileInfo: function (/*uid*/file, opts) {
+            $.each(opts, function (name, value) {
+                if (!file.hasOwnProperty(name)) {
+                    file[name] = value;
+                }
+            });
+        },
+        setMaxOrder: function (order) {
+            if (order) {
+                this.maxOrder = order;
+            }
+        },
+        getMaxOrder: function () {
+            return Number(this.maxOrder);
+        },
+        generateHiddenInputs: function () {
+            var self = this;
+            $.each(this.api.files, function (i, file) {
+                self.generateHiddenInput(file);
+            });
+        },
+        generateHiddenInput: function (data) {
+            var uid = fileapi.uid(data),
+                id = data.id,
+                fileName = data.fileName || data.name,
+                inputCommonName = this.options.attributeName + "[" + id + "]";
+
+            ["id", "name", "path", "delete", "order", "type", "size"].forEach(function (fieldName) {
+                var value = "name" === fieldName ? fileName : data[fieldName];
+                $("<input>", {
+                    "name": inputCommonName + "[" + fieldName + "]",
+                    "value": value,
+                    "class": fieldName,
+                    "type": "hidden"
+                }).appendTo(this.$el);
+            }, this);
+
+            var addFieldsData = data.description && "undefined" !== data.description ?
+                    JSON.parse(data.description) :
+                    {};
+            Object.keys(this.options.addFields || {}).forEach(function (fieldName) {
+                var isTextArea = false,
+                    inputType = "text",
+                    addField = this.options.addFields[fieldName];
+                fieldName = /\d+/.test(fieldName) ? addField : fieldName;
+                var addFieldValue = addFieldsData[fieldName] || "",
+                    inputOptions = {
+                        "name": inputCommonName + "[description][" + fieldName + "]",
+                        "class": "form-control image-description",
+                        "css": {marginBottom: "5px"},
+                        "data": {fileapiUid: uid},
+                        "placeholder": "string" === typeof addField ?
+                            addField :
+                            (addField.title || null)
+                    };
+
+                if ("object" === typeof addField && addField.hasOwnProperty("type")) {
+                    if ("textarea" === addField.type) {
+                        isTextArea = true;
+                    } else {
+                        inputType = addField.type;
+                    }
+                }
+                if (!isTextArea) {
+                    inputOptions.type = inputType;
+                    inputOptions.value = addFieldValue;
+                } else {
+                    inputOptions.text = addFieldValue;
+                }
+
+                $(!isTextArea ? "<input>" : "<textarea>", inputOptions)
+                    .appendTo(this.api.$file(uid).find(".description-wrapper"));
+            }, this);
+        },
+        deleteFile: function (file) {
+            if (!file) {
+                return;
+            }
+            if (file.hasOwnProperty('id')) {
+                var inputName = this.options.attributeName + "[" + file.id + "][delete]";
+                this.$el.find("input[name='" + inputName + "']").val(1);
+            }
+            this.deleteImageLink(fileapi.uid(file));
+            this.api.remove(file);
+            if (null !== this.$form) {
+                this.$form.yiiActiveForm("validateAttribute", this.$el.prop("id"));
+            }
+        },
+        deleteAllFiles: function () {
+            var self = this;
+            (this.api.files || []).forEach(function (file) {
+                self.deleteFile(file);
+            });
+        },
+        deleteImageLink: function (uid) {
+            var self = this;
+            $.each(self.imageLinks, function (index) {
+                if (uid === this.uid) {
+                    if (/^blob:/.test(this.href)) {
+                        URL.revokeObjectURL(this.href);
+                    }
+                    self.imageLinks.splice(index, 1);
+                    return false;
+                }
+            });
+        },
+        findImageLink: function (uid) {
+            var link = null;
+            $.each(this.imageLinks, function () {
+                if (uid === this.uid) {
+                    link = this;
+                    return false;
+                }
+            });
+            return link;
+        },
+        sortImages: function () {
+            var self = this,
+                files = [];
+            this.api.$elem("file.preview.el").each(function (index) {
+                var fileId = $(this).closest("[data-fileapi-id]").data("fileapiId"),
+                    file = self.getFileById(fileId);
+                if (file && file.hasOwnProperty('id')) {
+                    var fieldName = self.options.attributeName + "[" + file.id + "][order]";
+                    self.$el.find("input[name='" + fieldName + "']").val(index + 1);
+                }
+                files.push(file);
+            });
+            this.api.files = files;
+        },
+        setDescription: function (file) {
+            var id = file.id,
+                inputName = this.options.attributeName + "[" + id + "][description]",
+                $input = this.$el.find("input[name='" + inputName + "']");
+            if (0 === $input.length) {
+                $input = $("<input>", {name: inputName, type: "hidden"}).appendTo(this.$el);
+            }
+            $input.val(file.description);
+        }
+    };
+
+    $.fn.uploadCrop = function (options) {
+        var args = arguments;
+
+        return this.each(function () {
+            var $this = $(this),
+                plugin = $this.data('uploadcrop');
+
+            if (plugin) {
+                if ('string' === typeof options) {
+                    var fn = plugin[options],
+                        res;
+
+                    if ($.isFunction(fn)) {
+                        res = fn.apply(plugin, _slice.call(args, 1));
+                    }
+
+                    return undefined === res ? $this : res;
+                }
+            } else if (null === options || 'object' === typeof options) {
+                $this.data('uploadcrop', new Plugin(this, options));
+            }
+        });
+    }
+})(jQuery, FileAPI, $.fancybox);
