@@ -1,0 +1,36 @@
+var favorite = {};
+favorite.icon = null;
+
+favorite.click = function () {
+    $(document).on('click', '.js-btn-favorites', function () {
+        if (isUserAuthorized()) {
+            var $button = $(this);
+            favorite.icon = $button.find('.svg-favourites');
+            var content_id = $button.attr('data-content_id');
+            var section = $button.attr('data-section');
+            if (favorite.icon.hasClass('selected')) {
+                favorite.removeFavorite(content_id, section);
+            } else {
+                favorite.addFavorite(content_id, section);
+            }
+        } else {
+            favorite.showAuthWindow();
+        }
+    });
+}();
+
+favorite.showAuthWindow = function () {
+   showAuthWindow();
+};
+
+favorite.addFavorite = function (content_id, section) {
+    jsonrpcWrapper('/ajax/jsonrpc', 'addFavorite', {'content_id': content_id, 'section': section}, function (data) {
+        favorite.icon.addClass('selected');
+    });
+};
+
+favorite.removeFavorite = function (content_id, section) {
+    jsonrpcWrapper('/ajax/jsonrpc', 'removeFavorite', {'content_id': content_id, 'section': section}, function (data) {
+        favorite.icon.removeClass('selected');
+    });
+};

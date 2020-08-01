@@ -1,0 +1,95 @@
+function Cart(options) {
+    this.settings = $.extend({
+        countSelector: ".header-cart__quantity",
+        popupSelector: ".products-basket",
+        removeProductTable: ".cart-product__close",
+        sumSelector: ".cart-results__holder .cart-results__info .item",
+        buyButtonSelector: ".buyBasket",
+        arrowUpSelector: ".cart-product__quant .quant.quant-plus",
+        arrowDownSelector: ".cart-product__quant .quant.quant-minus",
+        removeButtonSelector: ".cart-product__close",
+        addProductUrl: "/cart/add-product",
+        removeProductUrl: "/cart/remove-product",
+        popup: "#modal-cart"
+    }, options);
+
+    this.onBuyProduct = function () {
+        var self = this;
+        $("body").on("click", this.settings.buyButtonSelector, function () {
+            self.addProduct({id: $(this).data("id")});
+        });
+        $(this.settings.popup).on("click", this.settings.arrowUpSelector, function () {
+            self.addProduct({id: $(this).parents(".row.cart-product").data("id")});
+        });
+        $(".container-fluid").on("click", this.settings.arrowUpSelector, function () {
+            self.addProduct({id: $(this).parents(".row.cart-product").data("id")});
+        });
+    };
+
+    this.onRemoveProduct = function () {
+        var self = this;
+        $(this.settings.popup)
+            .on("click", this.settings.removeButtonSelector, function () {
+                self.removeProduct({id: $(this).parents(".row.cart-product").data("id")});
+            })
+            .on("click", this.settings.arrowDownSelector, function () {
+                self.removeProduct({id: $(this).parents(".row.cart-product").data("id"), count: 1});
+            });
+        $(".container-fluid")
+            .on("click", this.settings.removeProductTable, function () {
+                self.removeProduct({id: $(this).parents(".row.cart-product").data("id")});
+            })
+            .on("click", this.settings.arrowDownSelector, function () {
+                self.removeProduct({id: $(this).parents(".row.cart-product").data("id"), count: 1});
+            });
+    };
+
+    this.addProduct = function (prodValues) {
+        var self = this;
+        $.getJSON(this.settings.addProductUrl, prodValues, function (response) {
+            $(self.settings.popupSelector).html(response.table);
+            $(self.settings.sumSelector).html(response.sum);
+            $(self.settings.countSelector).text(response.cartCount);
+            $(".headerCart").show();
+
+            self.showPopup();
+        });
+    };
+
+    this.removeProduct = function (prodValues) {
+        var self = this;
+        $.getJSON(this.settings.removeProductUrl, prodValues, function (response) {
+            if (self.isCart()) {
+                $(self.settings.popupSelector).html(response.table);
+                $(self.settings.sumSelector).html(response.sum);
+            } else {
+                if (response.table) {
+                    $(self.settings.popupSelector).html(response.table);
+                } else {
+                    self.hidePopup();
+                }
+                $(self.settings.sumSelector).html(response.sum);
+            }
+            $(self.settings.countSelector).text(response.cartCount);
+        });
+    };
+
+    this.showPopup = function () {
+        if (!this.isCart()) {
+            $(this.settings.popup).modal("show");
+        }
+    };
+
+    this.hidePopup = function () {
+        if (!this.isCart()) {
+            $(this.settings.popup).modal("hide");
+        }
+    };
+
+    this.isCart = function () {
+        return "/cart" === window.location.pathname;
+    };
+
+    this.onBuyProduct();
+    this.onRemoveProduct();
+}

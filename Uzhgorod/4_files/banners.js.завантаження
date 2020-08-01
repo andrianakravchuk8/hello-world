@@ -1,0 +1,160 @@
+(function ($) {
+    $.CisBanners = function (options) {
+        var $window = $(window),
+            mobile = false,
+            desktop = false,
+            settings = $.extend(true, {}, {
+                route: "",
+                mobilePopup: {
+                    alwaysShow: false,
+                    inactiveDelay: 900, // 15 минут
+                    cookieName: "banner-popup"
+                },
+                stretchingPopup: {
+                    alwaysShow: false,
+                    inactiveDelay: 900, // 15 минут
+                    cookieName: "banner-lower-stretching"
+                }
+            }, options || {});
+
+        $window
+            .on("bannerLoadDone", function () {
+                var $popup = $(".mobile__popup_jacked"),
+                    $stretchingPopup = $(".lower_stretching_jacked"),
+                    hasPopupBanner = $(".bc-container div", $popup).length > 0,
+                    popupSettings = settings.mobilePopup,
+                    referrer = document.referrer,
+                    route = settings.route;
+                if (hasPopupBanner) {
+                    var isExternal = true,
+                        isCookieExpired = undefined === Cookies.get(popupSettings.cookieName);
+                    if ("" !== referrer) {
+                        var hostName = window.location.hostname.replace("www.", "");
+                        isExternal = -1 === (new URL(referrer)).host.indexOf(hostName);
+                    }
+                    var needToShow =
+                        ("news/view" === route && isExternal && isCookieExpired) ||
+                        ("site/index" === route && (isExternal || isCookieExpired));
+                    if (needToShow) {
+                        $('body').addClass('popup-is-shown');
+                        $popup.show();
+                    }
+                    $popup.on("click", ".f-banner__inner", function (event){
+                        //event.stopPropagation();
+                    });
+                    $popup.on("click", ".js-close-button", function () {
+                        $popup.hide();
+                        $('body').removeClass('popup-is-shown');
+                        $(".head-banner .b-carousel").slick('reinit');
+
+                        return false;
+                    });
+                }
+                var cookieExpire = new Date(Date.now() + popupSettings.inactiveDelay * 1000);
+                Cookies.set(popupSettings.cookieName, true, {path: "/", expires: cookieExpire});
+
+                hasPopupBanner = $(".bc-container div", $stretchingPopup).length > 0;
+                popupSettings = settings.stretchingPopup;
+                if (hasPopupBanner) {
+                    if (popupSettings.alwaysShow || undefined === Cookies.get(popupSettings.cookieName)) {
+                        $stretchingPopup.show();
+                    }
+                    $stretchingPopup.on("click", ".js-close-button", function () {
+                        $stretchingPopup.hide();
+                        return false;
+                    });
+                }
+                cookieExpire = new Date(Date.now() + popupSettings.inactiveDelay * 1000);
+                Cookies.set(popupSettings.cookieName, true, {path: "/", expires: cookieExpire});
+            })
+            .on("needToLoadBanners", function () {
+                function initCarousel() {
+                    $(".b-carousel")
+                        .on("init", function () {
+                            var $this = $(this),
+                                $activeSlide = $(".slick-active", $this);
+                            $this.closest(".banner").attr({
+                                "data-place-id": $activeSlide.data("currentPlaceId"),
+                                "data-banner-id": $activeSlide.data("currentBannerId")
+                            });
+                            $this.show();
+                        })
+                        .slick({
+                            rows: false,
+                            autoplay: true,
+                            autoplaySpeed: 20000,
+                            prevArrow: '<button type="button" class="slick-arrow slick-prev"><svg width="24" height="24"><use xlink:href="#svg-arrow-back"></use></svg></button>',
+                            nextArrow: '<button type="button" class="slick-arrow slick-next"><svg width="24" height="24"><use xlink:href="#svg-arrow-next"></use></svg></button>',
+                            infinite: true,
+                            draggable: false,
+                            dots: true,
+                            fade: true,
+                            pauseOnHover: false
+                        })
+                        .on("afterChange", function (slick, currentSlide) {
+                            var $slider = currentSlide.$slider,
+                                $activeSlide = $(".slick-active", $slider),
+                                $iFrame = $activeSlide.find("iframe");
+                            $slider.closest(".banner").attr({
+                                "data-place-id": $activeSlide.data("currentPlaceId"),
+                                "data-banner-id": $activeSlide.data("currentBannerId")
+                            });
+                            if ($iFrame.length > 0) {
+                                $iFrame[0].contentWindow.postMessage("startPlay", "*");
+                            }
+                        });
+                }
+
+                var m = isMobile(),
+                    xhr = null,
+                    data = $(".banner[data-page][data-place]").map(function () {
+                        return $(this).data();
+                    }).get();
+
+                if ((m === 1 && mobile) || (m === 0 && desktop)) {
+                    return;
+                }
+
+                if (null !== xhr) {
+                    xhr.abort();
+                }
+
+                if (m === 1 && !mobile) {
+                    mobile = true;
+                }
+
+                if (m === 0 && !desktop) {
+                    desktop = true;
+                }
+
+                xhr = $.get("/api3/additional-info", {mobile: m, data: data}, function (data) {
+                    if (data && data.banners) {
+                        for (var i = 0; i < data.banners.length; i++) {
+                            var banner = data.banners[i],
+                                $currentBannerBlock = $(".banner[data-place-name='" + banner.place + "']");
+                            $currentBannerBlock.html($(banner.html));
+                            var $dataBlock = $(".banner-data-block", $currentBannerBlock);
+
+                            $currentBannerBlock.attr({
+                                "data-place-id": $dataBlock.data("currentPlaceId"),
+                                "data-banner-id": $dataBlock.data("currentBannerId")
+                            });
+                        }
+                        initCarousel();
+                        $window.trigger("bannerLoadDone");
+                    }
+                    xhr = null;
+                }, "json");
+            })
+            .on("resize", function () {
+                $(this).trigger("needToLoadBanners");
+            })
+            .on("requestReinit", function () {
+                $(".b-carousel").slick('reinit');
+            });
+
+        function isMobile() {
+            return Number($window.width() <= 1024);
+        }
+    };
+})(jQuery);

@@ -1,0 +1,128 @@
+.image-uploader {
+    overflow: hidden;
+    clear: both;
+}
+
+.image-uploader-multiple .js-fileapi-wrapper {
+    margin-bottom: 5px;
+}
+
+.image-uploader-multiple .uploader-preview {
+    float: left;
+    position: relative;
+    overflow: hidden;
+    border: solid 1px #fff;
+    background-color: #fff;
+}
+
+.image-uploader-multiple .progress {
+    border-radius: 0;
+    bottom: 2px;
+    height: 6px;
+    position: absolute;
+    width: 100%;
+    margin-bottom: 0;
+}
+
+.image-uploader-multiple input[type="file"] {
+    display: none;
+}
+
+.image-uploader-multiple .preview-controls {
+    display: none;
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 20px;
+}
+
+.image-uploader-multiple .preview-controls .ctrl {
+    flex: 1 1 50%;
+    text-align: center;
+    color: #fff;
+}
+
+.image-uploader-multiple .preview-controls .ctrl svg {
+    fill: #fff;
+}
+
+.image-uploader-multiple .preview-controls .ctrl > span {
+    display: inline-block;
+    color: inherit;
+    font-size: 12px;
+}
+
+.image-uploader-multiple .preview-controls .ctrl > span:hover {
+    color: inherit;
+}
+
+.image-uploader-multiple .preview-item {
+    display: inline-flex;
+    align-items: flex-start;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    padding: 5px;
+}
+
+.image-uploader-multiple .preview-item .uploader-preview {
+    flex-shrink: 0;
+}
+
+.image-uploader-multiple .preview-item.has-extra-fields {
+    display: flex;
+}
+
+.image-uploader-multiple .preview-item .description-wrapper {
+    margin-left: 10px;
+    flex-grow: 1;
+}
+
+.image-uploader-multiple .preview-item .description-wrapper textarea {
+    resize: vertical;
+}
+
+.image-uploader-multiple .preview-item:hover .preview-controls {
+    display: flex;
+    background: #000;
+    opacity: 0.6;
+    cursor: pointer;
+}
+
+.image-uploader-multiple .preview-item .ctrl.ctrl-crop {
+    display: none;
+}
+
+.image-uploader-multiple .preview-item.has-crop.complete .ctrl-crop {
+    display: block;
+}
+
+.image-uploader-multiple .preview-item:hover .ctrl-crop:hover {
+    background: #31b0d5;
+}
+
+.image-uploader-multiple .preview-item:hover .ctrl-delete:hover {
+    background: #c9302c;
+}
+
+.image-uploader-multiple .uploader-preview-wrapper canvas,
+.image-uploader-multiple .uploader-preview-wrapper img {
+    display: block;
+    margin: auto;
+}
+
+.image-uploader-multiple .preview-item.has-error {
+    background-color: tomato;
+}
+
+.image-uploader-multiple .uploader-preview-wrapper {
+    cursor: pointer;
+}
+
+#modal-preview {
+    text-align: center;
+}
+
+.jcrop-holder .jcrop-keymgr {
+    opacity: 0;
+}

@@ -1,0 +1,223 @@
+var recommendation = {
+    $btn: null,
+    $modal: null,
+    firmId: null,
+    hasFeedback: false,
+
+    BTN_SELECTOR: '.btn-full-width.btn-recommend',
+    MODAL_SELECTOR: '.modal-recommend',
+    SUBMIT_BTN_SELECTOR: '.modal-inner.recommend button[type="submit"]',
+    RATELINE_SELECTOR: '.rateline-item',
+    BOTTOM_RATING_SELECTOR: '.rating-line .bottom-rating',
+
+    run: function () {
+        this.hasFeedback = !!$('.js-feedback-tab-button').length;
+
+        this.bindOnRecommendBtnClick();
+        this.bindOnSendClick();
+        this.bindOnRatelineMouse();
+        this.bindOnBottomRatingClick();
+    },
+
+    bindOnRecommendBtnClick: function () {
+        var self = this;
+
+        $(document).on('click', self.BTN_SELECTOR, function () {
+            if (!isUserAuthorized()) {
+                self.showAuthWindow();
+                return false;
+            }
+
+            self.fillProps($(this));
+
+            if (self.$btn.hasClass('selected') && !self.hasFeedBack) {
+                self.$modal.find('.acceptRecommendation').hide();
+                self.$modal.find('.alreadyRecommended').show();
+                self.showRecommended();
+            } else {
+                self.addRecommendation();
+            }
+
+            return false;
+        });
+    },
+
+    bindOnSendClick: function () {
+        var self = this;
+
+        $(document).on('click', self.SUBMIT_BTN_SELECTOR, function () {
+            jsonrpcWrapper('/ajax/jsonrpc', 'savePointsAndComment', {data: self.getModalRatesData()})
+                .then(function(data) {
+                    var $parentContainer = self.$btn.parents('.company-marks');
+                    var $shareLinks = $parentContainer.find('.share-links').detach();
+                    $parentContainer.after(data.result);
+                    $parentContainer.remove();
+        
+                    $('.company-marks').find('.share-links').replaceWith($shareLinks);
+                })
+                .catch(console.error);
+        });
+    },
+
+    bindOnRatelineMouse: function () {
+        $(document).on('mouseover', this.RATELINE_SELECTOR,
+            function () {
+                var $el = $(this);
+                $el.prevAll('span')
+                    .addClass('active');
+                $el.addClass('active');
+                var count = ($el.prevAll('span.active').length + 1) * 2;
+                $el.siblings('.rateline-count').text(count + '/12');
+            }
+        );
+
+        $(document).on('mouseout', this.RATELINE_SELECTOR,
+            function () {
+                var $el = $(this);
+                var $parentBlock = $el.parent('.recommend-section__rateline');
+                if (!$parentBlock) return;
+                
+                $parentBlock.find('span').each(function (i, el) {
+                    if (!$(el).is('[checked]')) {
+                        $(el).removeClass('active');
+                    }
+                });
+                var count = ($parentBlock.find('span[checked]').length) * 2;
+                $el.siblings('.rateline-count').text(count + '/12');
+            }
+        );
+
+        $(document).on('click', this.RATELINE_SELECTOR,
+            function () {
+                var $el = $(this);
+                $el.prevAll('span').addClass('active').attr('checked', 'checked');
+                $el.addClass('active').attr('checked', 'checked');
+                $el.nextAll('span').removeClass('active').removeAttr('checked');
+                var count = ($el.prevAll('span.active').length + 1) * 2;
+                $el.siblings('.rateline-count').text(count + '/12');
+            }
+        );
+    },
+
+    bindOnBottomRatingClick: function () {
+        var self = this;
+        
+        $(document).on('click', self.BOTTOM_RATING_SELECTOR, function () {
+            if (self.hasFeedBack) {
+                $('.js-feedback-tab-button').trigger('click');
+                $('html, body').animate({
+                    scrollTop: $(".js-feedback-tab-button").offset().top
+                }, 800);
+            } else {
+                self.showRatingWindow();
+            }
+        });
+    },
+
+    showRecommended: function () {
+        var self = this;
+
+        jsonrpcWrapper('/ajax/jsonrpc', 'recommendByUser', {firmId: self.firmId})
+            .then(function(data) {
+                var ratings = data.result.ratings;
+                if (ratings) {
+                   self.showRates(ratings);
+                } else {
+                    self.$modal.find(self.RATELINE_SELECTOR).removeClass('active');
+                    self.$modal.find('.rateline-count').text('0/12');
+                }
+
+                self.showModal();
+            })
+            .catch(console.error);
+    },
+
+    addRecommendation: function () {
+        var self = this;
+
+        jsonrpcWrapper('/ajax/jsonrpc', 'addRecommendation', {firm_id: self.firmId})
+            .then(function(data) {
+                self.$btn.addClass('selected');
+                self.$modal.find('.acceptRecommendation').show();
+                $('.top-reviews__count').html(data.result);
+                
+                self.showModal();
+            })
+            .catch(console.error);
+    },
+
+    showRates: function(ratings) {
+        for (var key in ratings) {
+            var value = ratings[key];
+            var $dots = this.$modal.find('.rateline-item[data-rate-id="' + key + '"]');
+            $dots.next('.rateline-count').text(value + '/12');
+            var spanCount = value / 2 - 1;
+            var $span = $($dots[spanCount]);
+
+            $span.addClass('active').attr('checked', 'checked');
+            $span.prevAll('span').addClass('active').attr('checked', 'checked');
+            $span.nextAll('span').removeClass('active').removeAttr('checked');
+        }
+    },
+
+    getModalRatesData: function($modal) {
+        $modal = $modal || this.$modal;
+
+        var data = {
+            ratings: {},
+            comment: $modal.find('#review').val(),
+            firmId: $modal.data('firmId'),
+            section: $modal.data('section'),
+            sizeView: $modal.data('sizeView'),
+            countViews: $modal.data('countViews'),
+            showComment: undefined !== $modal.data('showComment'),
+            companyInfo: $modal.data('companyInfo'),
+            favoriteAndCommentsParams: $modal.data('favoriteParams')
+        };
+
+        $modal.find('.recommend-section__rateline').each(function (i) {
+            var $dotsActive = $(this).find('.rateline-item.active'),
+                length = $dotsActive.length,
+                rateId = $dotsActive.data('rate-id'),
+                $formRate = $('form .recommend-section__rateline .rateline-item[data-rate-id="' + rateId + '"]');
+            data.ratings[rateId] = length * 2;
+            $formRate
+                .removeClass('active');
+            $formRate
+                .slice(0, length)
+                .addClass('active')
+                .attr('checked', true);
+            $formRate.siblings(".rateline-count").text(length * 2 + '/12');
+        });
+
+        return data;
+    },
+
+    fillProps: function($btn) {
+        this.$btn = $btn;
+        this.firmId = $btn.attr('data-firm-id');
+        this.$modal = this.getModal();
+    },
+
+    getModal: function(firmId) {
+        firmId = firmId || this.firmId;
+        return $(this.MODAL_SELECTOR + '[data-firm-id="' + firmId + '"]');
+    },
+
+    showModal: function($modal) {
+        $modal = $modal || this.$modal;
+        $modal.modal('show');
+    },
+
+    showAuthWindow: function () {
+        showAuthWindow();
+    },
+
+    showRatingWindow: function () {
+        $(this.BTN_SELECTOR).trigger('click');
+    }
+};
+
+$(document).ready(function () {
+    recommendation.run();
+});

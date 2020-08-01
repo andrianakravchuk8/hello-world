@@ -1,0 +1,43 @@
+var likes = {};
+likes.icon = null;
+likes.item = null;
+
+likes.click = function () {
+    $(document).on('click', '.js-btn-like', function () {
+        if (isUserAuthorized()) {
+            var $button = $(this);
+            likes.icon = $button.find('.svg-like');
+            likes.item = $button.parent('.ua-item');
+            var content_id = $button.attr('data-content_id');
+            var section = $button.attr('data-section');
+            if (likes.icon.hasClass('selected')) {
+                likes.removeLike(content_id, section);
+            } else {
+                likes.addLike(content_id, section);
+            }
+        } else {
+            likes.showAuthWindow();
+        }
+    });
+}();
+
+likes.showAuthWindow = function () {
+    showAuthWindow();
+};
+
+likes.addLike = function (content_id, section) {
+    jsonrpcWrapper('/ajax/jsonrpc', 'addLike', {'content_id': content_id, 'section': section},
+        function (data) {
+            likes.icon.addClass('selected');
+            likes.item.find('.ua-item__link').text(data.responseJSON.result);
+        });
+};
+
+likes.removeLike = function (content_id, section) {
+    jsonrpcWrapper('/ajax/jsonrpc', 'removeLike', {'content_id': content_id, 'section': section},
+        function (data) {
+            likes.icon.removeClass('selected');
+            likes.item.find('.ua-item__link').text(data.responseJSON.result);
+        });
+};
+

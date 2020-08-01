@@ -1,0 +1,140 @@
+/**
+ * @typedef {Object} AlertDefaultOptions
+ * @property {boolean} encodeMessage Признак необходимости кодирования сообщения
+ * @property {string} defaultAlertClass Класс сообщения по умолчанию
+ * @property {string} defaultShowClass  Класс, отвечающий за видимость сообщения по умолчанию
+ * @property {number} alertHideTimeout Таймаут по умолчанию для закрытия сообщения
+ */
+/**
+ * @typedef {Object} AlertOptions
+ * @property {boolean} [encode] Признак необходимости кодирования сообщения
+ * @property {string} [alertClass] Класс сообщения, например, "alert-success"
+ * @property {string} [showClass] Класс, отвечающий за видимость сообщения, например, "in" (Bootstrap 3) или
+ * "show" (Bootstrap 4)
+ * @property {number} [hideTimeout] Таймаут для закрытия сообщения, false для отключения автоматического закрытия
+ */
+(function ($) {
+    /** @type {jQuery} */
+    var $container;
+    var MAX_MESSAGE_LENGTH = 1000;
+
+    /**
+     * Форматирует сообщение message, заменяя шаблоны `{ключ}` на значения из ассоциативного массива replacements.
+     * Если ключ в массиве не найден, то шаблон заменяется на сам ключ.
+     *
+     * @param {string} message
+     * @param {Object.<string, string>} replacements
+     * @return {string}
+     */
+    function formatMessage(message, replacements) {
+        return message.replace(/{([^}]+?)}/g, function (/** {string} */ match, /** {string} */ replaceKey) {
+            return replacements[replaceKey] || replaceKey;
+        });
+    }
+
+    $.fn.cisAlerts = function () {
+        return this.each(function () {
+            $container = $(this);
+        });
+    };
+
+    var CisAlerts = {};
+    /** @type {AlertDefaultOptions} */
+    CisAlerts.defaults = {
+        encodeMessage: true,
+        defaultAlertClass: "alert-danger",
+        defaultShowClass: "in",
+        alertHideTimeout: 5000 // 5 секунд
+    };
+
+    /**
+     * Конфигурирует опции по умолчанию компонента
+     *
+     * @param {object} options новые опции
+     */
+    CisAlerts.config = function (options) {
+        CisAlerts.defaults = $.extend({}, CisAlerts.defaults, options);
+    };
+
+    /**
+     * Формирует сообщение об ошибке сервера.
+     *
+     * @param {{name?: string, status?: string, message?: string}} json объект, содержащий данные об ошибке, обычно
+     * в формате исключений Yii
+     * @return {string} Сообщение об ошибке сервера
+     */
+    CisAlerts.formatServerResponse = function (json) {
+        var message = json.hasOwnProperty("name") && json.name.length > 0 ? [json.name] : [];
+        if (json.hasOwnProperty("status")) {
+            message.push("(#" + json.status + ")");
+        }
+        if (json.hasOwnProperty("message") && json.message.length > 0) {
+            if (message.length > 0) {
+                message[message.length - 1] = message[message.length - 1] + ":";
+            }
+            message.push(json.message);
+        }
+
+        return message.join(" ");
+    };
+
+    /**
+     * Добавляет сообщение-"алерт" в общий контейнер на странице.
+     *
+     * @param {string} message текст или HTML-содержимое сообщения
+     * @param {Object.<string, string>} [messageData] данные для формирования сообщения в виде
+     * "ключШаблона: подставляемоеЗначение"
+     * @param {AlertOptions|number|boolean} [options] параметры сообщения, таймаут автоматического закрытия сообщения
+     * в миллисекундах или false для его отмены
+     * @return {boolean} Результат выполнения операции
+     */
+    CisAlerts.addAlert = function (message, messageData, options) {
+        if (undefined === $container) {
+            return false;
+        }
+        if ("object" !== typeof options) {
+            options = {hideTimeout: options};
+        }
+        message = formatMessage(message, messageData || {});
+        if (message.length > MAX_MESSAGE_LENGTH) {
+            message = message.substring(0, MAX_MESSAGE_LENGTH) + "...";
+        }
+        var encodeMessage = options.encode || CisAlerts.defaults.encodeMessage,
+            alertClass = options.alertClass || CisAlerts.defaults.defaultAlertClass,
+            hideTimeout = options.hasOwnProperty("hideTimeout") ?
+                options.hideTimeout :
+                CisAlerts.defaults.alertHideTimeout;
+        var $alert = $("<div>", {
+                "class": "alert fade",
+                "role": "alert"
+            }),
+            $message = $("<span>");
+        $alert.addClass(options.showClass || CisAlerts.defaults.defaultShowClass);
+        if (alertClass.length > 0) {
+            $alert.addClass(alertClass);
+        }
+        $("<button>", {
+            "class": "close",
+            "data-dismiss": "alert",
+            "aria-hidden": true,
+            "html": "&times;",
+            "type": "button"
+        }).appendTo($alert);
+        $message[encodeMessage ? "text" : "html"](message);
+        $alert
+            .append($message)
+            .appendTo($container)
+            .alert();
+        if (false !== hideTimeout) {
+            window.setTimeout(function () {
+                $alert.fadeOut(400, function () {
+                    $(this).remove();
+                });
+            }, parseInt(hideTimeout, 10));
+        }
+
+        return true;
+    };
+
+    $.CisAlerts = CisAlerts;
+})(jQuery);

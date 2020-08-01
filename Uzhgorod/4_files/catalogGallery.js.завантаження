@@ -1,0 +1,46 @@
+var localStorageGallery = {
+    data: {},
+    remove: function (id) {
+        delete localStorageGallery.data[id];
+    },
+    exist: function (id) {
+        return localStorageGallery.data.hasOwnProperty(id) && localStorageGallery.data[id] !== null;
+    },
+    get: function (id) {
+        return localStorageGallery.data[id];
+    },
+    set: function (id, cachedData) {
+        localStorageGallery.remove(id);
+        localStorageGallery.data[id] = cachedData;
+    }
+};
+
+$("#catalog-gallery").change(function () {
+    if (localStorageGallery.exist($(this).val())) {
+        $("#catalog-gallery-photos").data("fotorama").destroy();
+        $("#catalog-gallery-photos").empty();
+        $("#catalog-gallery-photos").html(localStorageGallery.get($(this).val()));
+        $(".fotorama").fotorama();
+    } else {
+        var url = $(this).data("url") || "/catalogfull/jsonrpc";
+        jsonrpcWrapper(url, "getPhotos", {
+                firmId: $(this).data("firm_id"),
+                selected: $(this).val(),
+                subscriptionId: $(this).data("subscription")
+            },
+            function (data) {
+                $("#catalog-gallery-photos").data("fotorama").destroy();
+                $("#catalog-gallery-photos").empty();
+                $("#catalog-gallery-photos").html(data.responseJSON.result.photos);
+                $(".fotorama").fotorama();
+                localStorageGallery.set(data.responseJSON.result.selected, data.responseJSON.result.photos);
+            });
+    }
+});
+$(function () {
+    $("#catalog-gallery").change();
+    if ($("#catalog-gallery option").length <= 1) {
+        $("#catalog-gallery").removeClass("chosen-select");
+        $("#catalog-gallery, #catalog_gallery_chosen").css({"display": "none"});
+    }
+});
